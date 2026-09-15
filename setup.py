@@ -105,11 +105,11 @@ setup(
     include_package_data=True,
 
     install_requires=[
-        "asn1crypto",
+        "asn1crypto>=1.5.1",
         "configobj",
         "msgpack>=0.5,<1.0.0",
-        "requests",
-        "PySocks"
+        "requests>=2.32.2",
+        "PySocks>=1.7.1"
     ],
 
     tests_require=TEST_REQUIREMENTS,
