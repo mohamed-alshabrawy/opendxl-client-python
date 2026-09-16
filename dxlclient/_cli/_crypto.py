@@ -1,18 +1,24 @@
 # -*- coding: utf-8 -*-
 ###############################################################################
-# Copyright (c) 2018 McAfee LLC - All Rights Reserved.
+# Copyright (c) 2026 Trellix - All Rights Reserved.
 ###############################################################################
 
 """
 Helpers for crypto operations used by the cli tools - e.g., for creating
-certificate requests and private keys
+certificate requests and private keys.
+
+Migrated from ``oscrypto``/``asn1crypto`` to the actively-maintained
+``cryptography`` package (oscrypto is unmaintained and breaks on OpenSSL 3.x).
+The public API of this module is unchanged.
 """
 
 from __future__ import absolute_import
 import logging
 
-from asn1crypto import x509, pem, csr
-from oscrypto import asymmetric
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from dxlclient import DxlUtils
 
@@ -21,15 +27,26 @@ logger = logging.getLogger(__name__)
 
 def _bytes_to_unicode(obj):
     """
-    Convert a non-`bytes` type object into a unicode string.
+    Convert a `bytes` type object into a unicode string.
 
     :param obj: the object to convert
     :return: If the supplied `obj` is of type `bytes`, decode it into a unicode
         string. If the `obj` is anything else (including None), the original
-        `obj` is returned. If the object is converted into a unicode string,
-        the type would be `unicode` for Python 2.x or `str` for Python 3.x.
+        `obj` is returned.
     """
     return obj.decode() if isinstance(obj, bytes) else obj
+
+
+def _unicode_to_bytes(obj):
+    """
+    Convert a unicode string into a `bytes` object.
+
+    :param obj: the object to convert
+    :return: If the supplied `obj` is a unicode string, encode it into `bytes`.
+        If the `obj` is anything else (including None), the original `obj` is
+        returned.
+    """
+    return obj.encode() if isinstance(obj, str) else obj
 
 
 class X509Name(object):
@@ -168,9 +185,21 @@ class X509Name(object):
         self._email_address = value
 
 
-_CRYPTO_SIGN_DIGEST = "sha256"
-_CRYPTO_KEY_TYPE = "rsa"
+_CRYPTO_KEY_PUBLIC_EXPONENT = 65537
 _CRYPTO_KEY_BITS = 2048
+
+# Maps X509Name attribute names to the corresponding cryptography NameOID.
+# Order is significant: it defines the order of RDNs in the built subject and
+# matches the ordering previously produced by asn1crypto.
+_SUBJECT_OID_MAP = [
+    (u"common_name", NameOID.COMMON_NAME),
+    (u"country_name", NameOID.COUNTRY_NAME),
+    (u"state_or_province_name", NameOID.STATE_OR_PROVINCE_NAME),
+    (u"locality_name", NameOID.LOCALITY_NAME),
+    (u"organization_name", NameOID.ORGANIZATION_NAME),
+    (u"organizational_unit_name", NameOID.ORGANIZATIONAL_UNIT_NAME),
+    (u"email_address", NameOID.EMAIL_ADDRESS),
+]
 
 
 class _KeyPair(object):
@@ -178,16 +207,18 @@ class _KeyPair(object):
     RSA public / private key pair generator
     """
     def __init__(self):
-        self._key_pair = asymmetric.generate_pair(_CRYPTO_KEY_TYPE,
-                                                  _CRYPTO_KEY_BITS)
-        self._public_key, self._private_key = self._key_pair
+        self._private_key = rsa.generate_private_key(
+            public_exponent=_CRYPTO_KEY_PUBLIC_EXPONENT,
+            key_size=_CRYPTO_KEY_BITS
+        )
+        self._public_key = self._private_key.public_key()
 
     @property
     def private_key(self):
         """
         The private key
 
-        :rtype: asymmetric.PrivateKey
+        :rtype: cryptography.hazmat.primitives.asymmetric.rsa.RSAPrivateKey
         """
         return self._private_key
 
@@ -196,23 +227,31 @@ class _KeyPair(object):
         """
         The public key
 
-        :rtype: asymmetric.PublicKey
+        :rtype: cryptography.hazmat.primitives.asymmetric.rsa.RSAPublicKey
         """
         return self._public_key
 
     def private_key_as_pem(self, passphrase=None):
         """
-        Return the private key as a PEM-encoded string.
+        Return the private key as a PEM-encoded (PKCS#8) byte string.
 
-        :param passphrase: If a `str` object is supplied, encrypt the private
-            key with the passphrase before converting it to PEM format. If
-            `None` is supplied, convert it to PEM format without performing any
-            encryption.
+        :param passphrase: If a `str` (or `bytes`) object is supplied, encrypt
+            the private key with the passphrase before converting it to PEM
+            format. If `None` is supplied, convert it to PEM format without
+            performing any encryption.
         :return: private key in PEM format
-        :rtype: str
+        :rtype: bytes
         """
-        return asymmetric.dump_private_key(self._private_key,
-                                           _bytes_to_unicode(passphrase))
+        if passphrase:
+            encryption = serialization.BestAvailableEncryption(
+                _unicode_to_bytes(passphrase))
+        else:
+            encryption = serialization.NoEncryption()
+        return self._private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=encryption
+        )
 
 
 class _CertificateRequest(object):
@@ -224,124 +263,69 @@ class _CertificateRequest(object):
         Constructor parameters:
 
         :param X509Name subject: subject to add to the certificate request
-        :param _KeyPair key_pair: key pair containing the public key to use
-            when creating the signature for the certificate request
+        :param _KeyPair key_pair: key pair containing the private key used to
+            sign the certificate request and the public key embedded in it
         :param sans: collection of dns names to insert into a subjAltName
             extension for the certificate request
         :type sans: list(str) or tuple(str) or set(str)
         """
-        csr_info = self._csr_info(subject, key_pair.public_key, sans)
-        csr_signature = asymmetric.rsa_pkcs1v15_sign(
-            key_pair.private_key,
-            csr_info.dump(),
-            _CRYPTO_SIGN_DIGEST
-        )
-        self._req = csr.CertificationRequest({
-            "certification_request_info": csr_info,
-            "signature_algorithm": {
-                "algorithm": u"{}_rsa".format(_CRYPTO_SIGN_DIGEST)
-            },
-            "signature": csr_signature})
+        builder = x509.CertificateSigningRequestBuilder().subject_name(
+            self._build_subject(subject))
 
-    def _csr_info(self, subject, public_key, sans):
-        """
-        Create the csr info portion of the certificate request"s ASN.1
-        structure
+        builder = builder.add_extension(
+            x509.BasicConstraints(ca=False, path_length=None),
+            critical=False)
+        builder = builder.add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False
+            ),
+            critical=True)
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),
+            critical=False)
 
-        :param X509Name subject: subject to add to the certificate request
-        :param asymmetric.PublicKey public_key: public key to use when creating
-            the certificate request"s signature
-        :param sans: collection of dns names to insert into a subjAltName
-            extension for the certificate request
-        :type sans: None or list(str) or tuple(str) or set(str)
-        :return: the certificate request info structure
-        :rtype: csr.CertificationRequestInfo
-        """
-        x509_subject = x509.Name.build(self._subject_as_dict(subject))
-        extensions = [(u"basic_constraints",
-                       x509.BasicConstraints({"ca": False}),
-                       False),
-                      (u"key_usage",
-                       x509.KeyUsage({"digital_signature",
-                                      "key_encipherment"}),
-                       True),
-                      (u"extended_key_usage",
-                       x509.ExtKeyUsageSyntax([u"client_auth"]),
-                       False)]
         if sans:
-            names = x509.GeneralNames()
-            for san in sans:
-                names.append(x509.GeneralName("dns_name",
-                                              _bytes_to_unicode(san)))
-            extensions.append((u"subject_alt_name", names, False))
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName(
+                    [x509.DNSName(_bytes_to_unicode(san)) for san in sans]),
+                critical=False)
 
-        return csr.CertificationRequestInfo({
-            "version": u"v1",
-            "subject": x509_subject,
-            "subject_pk_info": public_key.asn1,
-            "attributes":
-                [{"type": u"extension_request",
-                  "values": [[self._create_extension(x) for x in extensions]]}]})
+        self._req = builder.sign(key_pair.private_key, hashes.SHA256())
 
     @staticmethod
-    def _create_extension(extension):
+    def _build_subject(subject):
         """
-        Create an ASN.1 certificate request extension structure
-
-        :param tuple extension: tuple with three values: name of the
-            extension (str), value for the extension(str), and whether or not
-            the extension should be considered critical (bool)
-        :return: the extension
-        :rtype: dict
-        """
-        name, value, critical = extension
-        return {"extn_id": name,
-                "extn_value": value,
-                "critical": critical}
-
-    @staticmethod
-    def _set_subject_dict_kvp(subject, subject_dict, name):
-        """
-        Obtain the value from the subject for the `name` attribute. Set the
-        corresponding key / value pair into the `subject_dict`.
-
-        :param subject: object containing the attribute value to retrieve
-        :param subject_dict: dictionary to insert the retrieved attribute info
-            into
-        :param name: name of the attribute in the `subject` and corresponding
-            key in the `subject_dict`
-        """
-        value = getattr(subject, name)
-        if value is not None:
-            subject_dict[name] = _bytes_to_unicode(value)
-
-    def _subject_as_dict(self, subject):
-        """
-        Convert the supplied subject from a :class:`X509Name` into a `dict`.
+        Convert the supplied :class:`X509Name` into a
+        :class:`cryptography.x509.Name`.
 
         :param X509Name subject: subject to convert
-        :return: `dict` containing info from the `subject`
-        :rtype: dict(str, str)
+        :return: the built X.509 name
+        :rtype: cryptography.x509.Name
         """
-        subject_dict = {}
-        for attribute in [u"common_name",
-                          u"country_name",
-                          u"state_or_province_name",
-                          u"locality_name",
-                          u"organization_name",
-                          u"organizational_unit_name",
-                          u"email_address"]:
-            self._set_subject_dict_kvp(subject, subject_dict, attribute)
-        return subject_dict
+        attributes = []
+        for attribute_name, oid in _SUBJECT_OID_MAP:
+            value = getattr(subject, attribute_name)
+            if value is not None:
+                attributes.append(
+                    x509.NameAttribute(oid, _bytes_to_unicode(value)))
+        return x509.Name(attributes)
 
     def dump_to_pem(self):
         """
-        Dump the certificate request to a PEM-encoded string
+        Dump the certificate request to a PEM-encoded byte string
 
-        :return: the certificate request PEM string
-        :rtype: str
+        :return: the certificate request PEM
+        :rtype: bytes
         """
-        return pem.armor(u"CERTIFICATE REQUEST", self._req.dump())
+        return self._req.public_bytes(serialization.Encoding.PEM)
 
 
 class CsrAndPrivateKeyGenerator(object):
@@ -382,10 +366,10 @@ class CsrAndPrivateKeyGenerator(object):
     @property
     def csr(self):
         """
-        Return the certificate request as PEM-encoded string
+        Return the certificate request as a PEM-encoded byte string
 
         :return: the PEM-encoded certificate request
-        ​:rtype: str
+        :rtype: bytes
         """
         return self._csr.dump_to_pem()
 
@@ -404,12 +388,10 @@ def validate_cert_pem(pem_text, message_on_exception=None):
     try:
         pem_bytes = pem_text if isinstance(pem_text, bytes) \
             else pem_text.encode()
-        object_name, _, der_bytes = pem.unarmor(pem_bytes)
-        if object_name != "CERTIFICATE":
-            raise Exception(
-                "Expected CERTIFICATE type for PEM, Received: {}".format(
-                    object_name))
-        x509.Certificate.load(der_bytes)
+        # load_pem_x509_certificate parses and validates the DER structure of
+        # the certificate; it raises ValueError if the PEM does not contain a
+        # valid certificate (e.g. a CSR or key was supplied instead).
+        x509.load_pem_x509_certificate(pem_bytes)
     except Exception as ex:
         logger.error("%s. Reason: %s",
                      message_on_exception or
