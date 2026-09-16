@@ -6,7 +6,7 @@
 
 ## Overview
 
-The OpenDXL Python Client enables the development of applications that connect to the [Trellix Data Exchange Layer](`[https://www.trellix.com/products/threat-intelligence-exchange/]) messaging fabric for the purposes of sending/receiving events and invoking/providing services.
+The OpenDXL Python Client enables the development of applications that connect to the [Trellix Data Exchange Layer](https://www.trellix.com/products/threat-intelligence-exchange/) messaging fabric for the purposes of sending/receiving events and invoking/providing services.
 
 ## Documentation
 
