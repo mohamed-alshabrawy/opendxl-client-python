@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 ###############################################################################
-# Copyright (c) 2018 McAfee LLC - All Rights Reserved.
+# Copyright (c) 2026 Trellix - All Rights Reserved.
 ###############################################################################
 
 """Helpers for the client cli"""
