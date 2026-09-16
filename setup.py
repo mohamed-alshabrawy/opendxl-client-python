@@ -86,30 +86,25 @@ setup(
     # Custom Paho MQTT Python client with proxy support added as a git submodule
     package_dir={
         'pahoproxy': 'paho_mqtt_dxl/src/paho/mqtt',
-        'oscrypto': 'oscrypto/oscrypto'
     },
 
     # Packages
     packages=[
-        "dxlclient",
-        "dxlclient._cli",
-        "pahoproxy",
-        "oscrypto",
-        "oscrypto._openssl",
-        "oscrypto._mac",
-        "oscrypto._win",
-        "oscrypto._linux_bsd"
+    "dxlclient",
+    "dxlclient._cli",
+    "pahoproxy",
     ],
 
     # Include additional files into the package
     include_package_data=True,
 
     install_requires=[
-        "asn1crypto",
+        "asn1crypto",          # keep ONLY if referenced elsewhere; otherwise remove
         "configobj",
         "msgpack>=0.5,<1.0.0",
-        "requests",
-        "PySocks"
+        "requests>=2.32.2",
+        "PySocks>=1.7.1",
+        "cryptography>=42.0.0",
     ],
 
     tests_require=TEST_REQUIREMENTS,
