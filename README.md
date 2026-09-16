@@ -6,7 +6,7 @@
 
 ## Overview
 
-The OpenDXL Python Client enables the development of applications that connect to the [McAfee Data Exchange Layer](http://www.mcafee.com/us/solutions/data-exchange-layer.aspx) messaging fabric for the purposes of sending/receiving events and invoking/providing services.
+The OpenDXL Python Client enables the development of applications that connect to the [Trellix Data Exchange Layer](`[https://www.trellix.com/products/threat-intelligence-exchange/]) messaging fabric for the purposes of sending/receiving events and invoking/providing services.
 
 ## Documentation
 
@@ -30,7 +30,7 @@ For bugs, questions and discussions please use the [Github Issues](https://githu
 
 ## LICENSE
 
-Copyright 2024 Musarubra US LLC.
+Copyright 2026 Musarubra US LLC.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
 
